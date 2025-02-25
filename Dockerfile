@@ -5,14 +5,15 @@ WORKDIR /app
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
     build-essential \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first to leverage Docker cache
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Download the model file
-RUN wget -O piano_transcription_inference_v1.pth https://github.com/bytedance/piano_transcription/releases/download/v1.0.0/piano_transcription_inference_v1.pth
+# Download the model file using curl
+RUN curl -L -o piano_transcription_inference_v1.pth https://huggingface.co/qiuqiangkong/piano_transcription/resolve/main/piano_transcription_inference_v1.pth
 # Copy the rest of the application
 COPY . .
 
