@@ -1,7 +1,5 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-import torch
-from transformers import AutoProcessor, AutoModelForAudioClassification
 import numpy as np
 from midiutil import MIDIFile
 import os
@@ -9,77 +7,67 @@ import tempfile
 import httpx
 from dotenv import load_dotenv
 import soundfile as sf
+from basic_pitch import ICASSP_2022_MODEL_PATH
+from basic_pitch.inference import predict_and_save
+from basic_pitch.inference import predict
 
 load_dotenv()
 
-# Configure torch for minimal memory usage
-torch.set_num_threads(1)
-torch.set_num_interop_threads(1)
+app = FastAPI(
+    title="Audio Transcription Service",
+    description="Service for transcribing audio files to MIDI using Basic Pitch"
+)
 
-app = FastAPI()
-
-# Add CORS middleware
+# Add CORS middleware with specific origins
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # In production, you should list specific origins
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Initialize model and processor from local cache
-model_name = "modelo-base/piano-transcription-transformer"
-model_cache_dir = "/app/models"
-
-try:
-    processor = AutoProcessor.from_pretrained(model_name, local_files_only=True, cache_dir=model_cache_dir)
-    model = AutoModelForAudioClassification.from_pretrained(model_name, local_files_only=True, cache_dir=model_cache_dir)
-except Exception as e:
-    print(f"Error loading from cache, attempting to download: {e}")
-    processor = AutoProcessor.from_pretrained(model_name, cache_dir=model_cache_dir)
-    model = AutoModelForAudioClassification.from_pretrained(model_name, cache_dir=model_cache_dir)
-
-model.eval()
-
 def audio_to_midi(audio_path, midi_path):
-    """Convert audio to MIDI using the piano transcription model"""
-    # Load and preprocess audio
-    audio, sr = sf.read(audio_path)
-    if len(audio.shape) > 1:
-        audio = audio.mean(axis=1)  # Convert stereo to mono
-    
-    # Process audio in chunks to save memory
-    chunk_size = 16000 * 10  # 10 seconds
-    midi_obj = MIDIFile(1)
-    midi_obj.addTempo(0, 0, 120)
-    
-    for i in range(0, len(audio), chunk_size):
-        chunk = audio[i:min(i + chunk_size, len(audio))]
+    """Convert audio to MIDI using Spotify's Basic Pitch"""
+    try:
+        print(f"Processing audio file: {audio_path}")
+        print(f"Output MIDI path: {midi_path}")
         
-        # Prepare input
-        inputs = processor(chunk, sampling_rate=sr, return_tensors="pt")
+        # Basic Pitch will handle the MIDI creation with only supported parameters
+        predict_and_save(
+            audio_path_list=[audio_path],
+            output_directory=os.path.dirname(midi_path),
+            save_midi=True,
+            midi_tempo=120.0,
+            minimum_frequency=None,
+            maximum_frequency=None
+        )
         
-        # Get model predictions
-        with torch.no_grad():
-            outputs = model(**inputs)
-            predictions = torch.sigmoid(outputs.logits)
+        # The output file will have "_basic_pitch" appended to it
+        output_base = os.path.splitext(midi_path)[0]
+        output_midi = f"{output_base}_basic_pitch.mid"
         
-        # Convert predictions to MIDI notes
-        # The model outputs probabilities for each piano key at each time step
-        predictions = predictions.squeeze().numpy()
+        print(f"Looking for output MIDI file at: {output_midi}")
         
-        for time_idx, frame in enumerate(predictions):
-            for note_idx, prob in enumerate(frame):
-                if prob > 0.5:  # Note activation threshold
-                    start_time = (i + time_idx) / sr
-                    duration = 0.1  # Default note duration
-                    pitch = note_idx + 21  # MIDI note numbers start at 21 (A0)
-                    velocity = int(min(127, prob * 127))  # Convert probability to velocity
-                    midi_obj.addNote(0, 0, pitch, start_time, duration, velocity)
-    
-    # Save MIDI file
-    with open(midi_path, "wb") as midi_file:
-        midi_obj.writeFile(midi_file)
+        # Rename the file to match our expected output path
+        if os.path.exists(output_midi):
+            os.rename(output_midi, midi_path)
+            print(f"Successfully renamed MIDI file to: {midi_path}")
+        else:
+            raise Exception(f"MIDI file was not created successfully at {output_midi}")
+            
+    except Exception as e:
+        print(f"Error in audio_to_midi conversion: {str(e)}")
+        raise
+
+@app.get("/")
+async def root():
+    """Root endpoint for health checks"""
+    return {
+        "status": "online",
+        "service": "audio-transcription",
+        "version": "1.0.0"
+    }
 
 @app.post("/transcribe")
 async def transcribe_audio(
@@ -89,8 +77,10 @@ async def transcribe_audio(
 ):
     try:
         with tempfile.TemporaryDirectory() as temp_dir:
-            audio_path = os.path.join(temp_dir, f"{audio_file_id}.wav")
+            audio_path = os.path.join(temp_dir, audio_file_id)
             midi_path = os.path.join(temp_dir, f"{audio_file_id}.mid")
+            
+            print(f"Downloading audio file: {audio_file_id}")
             
             # Download with streaming to reduce memory usage
             storage_url = f"{supabase_url}/storage/v1/object/public/audio-uploads/{audio_file_id}"
@@ -102,20 +92,21 @@ async def transcribe_audio(
                     with open(audio_path, "wb") as f:
                         async for chunk in response.aiter_bytes(chunk_size=8192):
                             f.write(chunk)
-
-            # Force garbage collection before transcription
-            import gc
-            gc.collect()
-            torch.cuda.empty_cache()
+            
+            print("Audio file downloaded successfully")
             
             # Process the audio file
             audio_to_midi(audio_path, midi_path)
+            
+            print("Audio conversion completed")
             
             # Upload MIDI file with streaming
             headers = {
                 "Authorization": f"Bearer {supabase_key}",
                 "Content-Type": "audio/midi"
             }
+            
+            print("Uploading MIDI file")
             
             with open(midi_path, "rb") as f:
                 upload_url = f"{supabase_url}/storage/v1/object/midi-files/{audio_file_id}.mid"
@@ -127,6 +118,8 @@ async def transcribe_audio(
                     )
                     if response.status_code != 200:
                         raise HTTPException(status_code=500, detail="Failed to upload MIDI file")
+
+            print("MIDI file uploaded successfully")
 
             # Update status
             headers.update({
@@ -147,9 +140,11 @@ async def transcribe_audio(
                 if response.status_code != 200:
                     raise HTTPException(status_code=500, detail="Failed to update transcription status")
 
+            print("Transcription status updated successfully")
             return {"status": "success", "midi_file": f"{audio_file_id}.mid"}
 
     except Exception as e:
+        print(f"Error during transcription: {str(e)}")
         # Update error status
         headers = {
             "Authorization": f"Bearer {supabase_key}",
@@ -174,3 +169,8 @@ async def transcribe_audio(
 @app.get("/health")
 async def health_check():
     return {"status": "healthy"}
+
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.environ.get("PORT", 10000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
