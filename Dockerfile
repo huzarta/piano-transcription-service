@@ -34,7 +34,7 @@ RUN . $VIRTUAL_ENV/bin/activate && \
 COPY . .
 
 # Download basic-pitch model before starting (to avoid first-request delay)
-RUN python download_model.py
+RUN . $VIRTUAL_ENV/bin/activate && python download_model.py
 
 # Expose the port the app runs on
 EXPOSE 8000
