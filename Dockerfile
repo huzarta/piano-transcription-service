@@ -1,43 +1,31 @@
-FROM python:3.9-slim
+ROM python:3.9-slim
 
 WORKDIR /app
 
-# Install system dependencies first, before any other operations
+# Install system dependencies first
 RUN apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     build-essential \
     curl \
     git \
-    libsndfile1 && \
+    libsndfile1 \
+    python3-venv \
+    ffmpeg && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
-# Set memory and environment variables early
+# Set environment variables
+ENV VIRTUAL_ENV=/opt/venv
+ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 ENV PYTHONUNBUFFERED=1
-ENV PYTHONMEM=256m
-ENV OMP_NUM_THREADS=1
-ENV MKL_NUM_THREADS=1
-ENV TRANSFORMERS_CACHE="/app/models"
-ENV HF_HOME="/app/models"
 
-# Copy requirements first to leverage Docker cache
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Create virtual environment
+RUN python -m venv $VIRTUAL_ENV
 
-# Create model directory and download the model during build
-RUN mkdir -p /app/models
-RUN python -c "import torch; \
-    from transformers import AutoFeatureExtractor, AutoModelForAudioClassification; \
-    model_name='modelo-base/piano-transcription-transformer'; \
-    torch.hub.set_dir('/app/models'); \
-    processor = AutoFeatureExtractor.from_pretrained(model_name); \
-    model = AutoModelForAudioClassification.from_pretrained(model_name)"
+# Copy requirements first for better caching
+COPY requirements.txt ./
 
-# Copy the rest of the application
-COPY . .
-
-# Expose the port the app runs on
-EXPOSE 8000
-
-# Command to run the application with reduced worker count and memory limits
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--limit-concurrency", "1", "--timeout-keep-alive", "30", "--memory-limit", "256"]
+# Install dependencies
+RUN . $VIRTUAL_ENV/bin/activate && \
+    pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
