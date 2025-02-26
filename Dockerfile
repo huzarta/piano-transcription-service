@@ -7,7 +7,8 @@ RUN apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     build-essential \
     curl \
-    git && \
+    git \
+    libsndfile1 && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
@@ -23,9 +24,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Create model directory and download the model during build
 RUN mkdir -p /app/models
-RUN python -c "from transformers import AutoProcessor, AutoModelForAudioClassification; \
+RUN python -c "from transformers import AutoFeatureExtractor, AutoModelForAudioClassification; \
     model_name='modelo-base/piano-transcription-transformer'; \
-    processor = AutoProcessor.from_pretrained(model_name, cache_dir='/app/models'); \
+    processor = AutoFeatureExtractor.from_pretrained(model_name, cache_dir='/app/models'); \
     model = AutoModelForAudioClassification.from_pretrained(model_name, cache_dir='/app/models')"
 
 # Copy the rest of the application
