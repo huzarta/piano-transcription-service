@@ -1,4 +1,4 @@
-ROM python:3.9-slim
+FROM python:3.9-slim
 
 WORKDIR /app
 
@@ -29,3 +29,15 @@ COPY requirements.txt ./
 RUN . $VIRTUAL_ENV/bin/activate && \
     pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
+
+# Copy the rest of the application
+COPY . .
+
+# Download basic-pitch model before starting (to avoid first-request delay)
+RUN python download_model.py
+
+# Expose the port the app runs on
+EXPOSE 8000
+
+# Command to run the application
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--limit-concurrency", "1"]
