@@ -1,18 +1,17 @@
-FROM python:3.9-slim
+ROM python:3.9-slim
 
 WORKDIR /app
 
 # Install system dependencies first, before any other operations
 RUN apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-    wget \
     build-essential \
-    curl && \
+    curl \
+    git && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
 # Set memory and environment variables early
-ENV PYTORCH_CPU_ONLY=1
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONMEM=256m
 ENV OMP_NUM_THREADS=1
@@ -22,8 +21,12 @@ ENV MKL_NUM_THREADS=1
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Download the model file using wget
-RUN wget --no-verbose -O piano_transcription_inference_v1.pth https://huggingface.co/qiuqiangkong/piano_transcription/resolve/main/piano_transcription_inference_v1.pth
+# Create model directory and download the model during build
+RUN mkdir -p /app/models
+RUN python -c "from transformers import AutoProcessor, AutoModelForAudioClassification; \
+    model_name='modelo-base/piano-transcription-transformer'; \
+    processor = AutoProcessor.from_pretrained(model_name, cache_dir='/app/models'); \
+    model = AutoModelForAudioClassification.from_pretrained(model_name, cache_dir='/app/models')"
 
 # Copy the rest of the application
 COPY . .
