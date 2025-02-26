@@ -23,9 +23,10 @@ app.add_middleware(
 )
 
 # Initialize the transcriptor at startup
+model_path = os.path.join(os.path.dirname(__file__), 'piano_transcription_inference_v1.pth')
 transcriptor = piano_transcription_inference.PianoTranscription(
     device='cpu',
-    checkpoint_path='piano_transcription_inference_v1.pth'
+    checkpoint_path=model_path
 )
 
 @app.post("/transcribe")
