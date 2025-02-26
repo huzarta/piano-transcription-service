@@ -2,8 +2,8 @@ fastapi==0.104.1
 uvicorn==0.24.0
 python-multipart==0.0.6
 piano_transcription_inference==0.0.5
-numpy>=1.22.0
-torch==1.13.1
+numpy==1.24.3
+torch==1.13.1 --index-url https://download.pytorch.org/whl/cpu
 midiutil==1.2.1
 python-dotenv==1.0.0
 httpx==0.25.2
