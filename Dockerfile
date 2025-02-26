@@ -17,6 +17,8 @@ ENV PYTHONUNBUFFERED=1
 ENV PYTHONMEM=256m
 ENV OMP_NUM_THREADS=1
 ENV MKL_NUM_THREADS=1
+ENV TRANSFORMERS_CACHE="/app/models"
+ENV HF_HOME="/app/models"
 
 # Copy requirements first to leverage Docker cache
 COPY requirements.txt .
@@ -24,10 +26,12 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Create model directory and download the model during build
 RUN mkdir -p /app/models
-RUN python -c "from transformers import AutoFeatureExtractor, AutoModelForAudioClassification; \
+RUN python -c "import torch; \
+    from transformers import AutoFeatureExtractor, AutoModelForAudioClassification; \
     model_name='modelo-base/piano-transcription-transformer'; \
-    processor = AutoFeatureExtractor.from_pretrained(model_name, cache_dir='/app/models'); \
-    model = AutoModelForAudioClassification.from_pretrained(model_name, cache_dir='/app/models')"
+    torch.hub.set_dir('/app/models'); \
+    processor = AutoFeatureExtractor.from_pretrained(model_name); \
+    model = AutoModelForAudioClassification.from_pretrained(model_name)"
 
 # Copy the rest of the application
 COPY . .
