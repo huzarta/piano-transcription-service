@@ -22,11 +22,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialize the transcriptor at startup
+# Force CPU usage and set smaller segment size
+torch.set_num_threads(1)  # Limit CPU threads
 model_path = os.path.join(os.path.dirname(__file__), 'piano_transcription_inference_v1.pth')
 transcriptor = piano_transcription_inference.PianoTranscription(
     device='cpu',
-    checkpoint_path=model_path
+    checkpoint_path=model_path,
+    segment_samples=8000*5  # Reduced segment size to save memory
 )
 
 @app.post("/transcribe")
@@ -52,6 +54,9 @@ async def transcribe_audio(
                 with open(audio_path, "wb") as f:
                     f.write(response.content)
 
+            # Clean up memory before transcription
+            torch.cuda.empty_cache()  # Clean GPU memory (even though we're on CPU)
+            
             # Transcribe audio to MIDI
             transcribed_dict = transcriptor.transcribe(audio_path)
             
