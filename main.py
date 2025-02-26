@@ -1,13 +1,14 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-import piano_transcription_inference
-import numpy as np
 import torch
+from transformers import AutoProcessor, AutoModelForAudioClassification
+import numpy as np
 from midiutil import MIDIFile
 import os
 import tempfile
 import httpx
 from dotenv import load_dotenv
+import soundfile as sf
 
 load_dotenv()
 
@@ -26,13 +27,59 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialize transcriptor with minimal memory settings
-model_path = os.path.join(os.path.dirname(__file__), 'piano_transcription_inference_v1.pth')
-transcriptor = piano_transcription_inference.PianoTranscription(
-    device='cpu',
-    checkpoint_path=model_path,
-    segment_samples=4000  # Significantly reduced segment size
-)
+# Initialize model and processor from local cache
+model_name = "modelo-base/piano-transcription-transformer"
+model_cache_dir = "/app/models"
+
+try:
+    processor = AutoProcessor.from_pretrained(model_name, local_files_only=True, cache_dir=model_cache_dir)
+    model = AutoModelForAudioClassification.from_pretrained(model_name, local_files_only=True, cache_dir=model_cache_dir)
+except Exception as e:
+    print(f"Error loading from cache, attempting to download: {e}")
+    processor = AutoProcessor.from_pretrained(model_name, cache_dir=model_cache_dir)
+    model = AutoModelForAudioClassification.from_pretrained(model_name, cache_dir=model_cache_dir)
+
+model.eval()
+
+def audio_to_midi(audio_path, midi_path):
+    """Convert audio to MIDI using the piano transcription model"""
+    # Load and preprocess audio
+    audio, sr = sf.read(audio_path)
+    if len(audio.shape) > 1:
+        audio = audio.mean(axis=1)  # Convert stereo to mono
+    
+    # Process audio in chunks to save memory
+    chunk_size = 16000 * 10  # 10 seconds
+    midi_obj = MIDIFile(1)
+    midi_obj.addTempo(0, 0, 120)
+    
+    for i in range(0, len(audio), chunk_size):
+        chunk = audio[i:min(i + chunk_size, len(audio))]
+        
+        # Prepare input
+        inputs = processor(chunk, sampling_rate=sr, return_tensors="pt")
+        
+        # Get model predictions
+        with torch.no_grad():
+            outputs = model(**inputs)
+            predictions = torch.sigmoid(outputs.logits)
+        
+        # Convert predictions to MIDI notes
+        # The model outputs probabilities for each piano key at each time step
+        predictions = predictions.squeeze().numpy()
+        
+        for time_idx, frame in enumerate(predictions):
+            for note_idx, prob in enumerate(frame):
+                if prob > 0.5:  # Note activation threshold
+                    start_time = (i + time_idx) / sr
+                    duration = 0.1  # Default note duration
+                    pitch = note_idx + 21  # MIDI note numbers start at 21 (A0)
+                    velocity = int(min(127, prob * 127))  # Convert probability to velocity
+                    midi_obj.addNote(0, 0, pitch, start_time, duration, velocity)
+    
+    # Save MIDI file
+    with open(midi_path, "wb") as midi_file:
+        midi_obj.writeFile(midi_file)
 
 @app.post("/transcribe")
 async def transcribe_audio(
@@ -62,24 +109,7 @@ async def transcribe_audio(
             torch.cuda.empty_cache()
             
             # Process the audio file
-            transcribed_dict = transcriptor.transcribe(audio_path)
-            
-            # Create MIDI file with minimal memory usage
-            midi_obj = MIDIFile(1)
-            midi_obj.addTempo(0, 0, 120)
-            
-            # Process notes in chunks to save memory
-            chunk_size = 100
-            notes = transcribed_dict['est_note_events']
-            for i in range(0, len(notes), chunk_size):
-                chunk = notes[i:i + chunk_size]
-                for note in chunk:
-                    start_time, duration, pitch, velocity = note
-                    midi_obj.addNote(0, 0, pitch, start_time, duration, velocity)
-            
-            # Save MIDI file
-            with open(midi_path, "wb") as midi_file:
-                midi_obj.writeFile(midi_file)
+            audio_to_midi(audio_path, midi_path)
             
             # Upload MIDI file with streaming
             headers = {
