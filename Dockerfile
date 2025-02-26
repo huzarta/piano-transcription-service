@@ -19,22 +19,23 @@ ENV VIRTUAL_ENV=/opt/venv
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 ENV PYTHONUNBUFFERED=1
 
-# Create virtual environment
+# Create virtual environment and activate it for all subsequent commands
+SHELL ["/bin/bash", "-c"]
 RUN python -m venv $VIRTUAL_ENV
+ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 
 # Copy requirements first for better caching
 COPY requirements.txt ./
 
 # Install dependencies
-RUN . $VIRTUAL_ENV/bin/activate && \
-    pip install --no-cache-dir --upgrade pip && \
+RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
 # Copy the rest of the application
 COPY . .
 
 # Download basic-pitch model before starting (to avoid first-request delay)
-RUN . $VIRTUAL_ENV/bin/activate && python download_model.py
+RUN python download_model.py
 
 # Expose the port the app runs on
 EXPOSE 8000
