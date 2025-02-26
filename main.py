@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, HTTPException
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import piano_transcription_inference
 import numpy as np
@@ -11,6 +11,10 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# Configure torch for minimal memory usage
+torch.set_num_threads(1)
+torch.set_num_interop_threads(1)
+
 app = FastAPI()
 
 # Add CORS middleware
@@ -22,13 +26,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Force CPU usage and set smaller segment size
-torch.set_num_threads(1)  # Limit CPU threads
+# Initialize transcriptor with minimal memory settings
 model_path = os.path.join(os.path.dirname(__file__), 'piano_transcription_inference_v1.pth')
 transcriptor = piano_transcription_inference.PianoTranscription(
     device='cpu',
     checkpoint_path=model_path,
-    segment_samples=8000*5  # Reduced segment size to save memory
+    segment_samples=4000  # Significantly reduced segment size
 )
 
 @app.post("/transcribe")
@@ -38,42 +41,47 @@ async def transcribe_audio(
     supabase_key: str
 ):
     try:
-        # Create temp directory
         with tempfile.TemporaryDirectory() as temp_dir:
-            # Download audio file from Supabase
             audio_path = os.path.join(temp_dir, f"{audio_file_id}.wav")
             midi_path = os.path.join(temp_dir, f"{audio_file_id}.mid")
             
-            # Download the file from Supabase storage
+            # Download with streaming to reduce memory usage
             storage_url = f"{supabase_url}/storage/v1/object/public/audio-uploads/{audio_file_id}"
             async with httpx.AsyncClient() as client:
-                response = await client.get(storage_url)
-                if response.status_code != 200:
-                    raise HTTPException(status_code=404, detail="Audio file not found")
-                
-                with open(audio_path, "wb") as f:
-                    f.write(response.content)
+                async with client.stream('GET', storage_url) as response:
+                    if response.status_code != 200:
+                        raise HTTPException(status_code=404, detail="Audio file not found")
+                    
+                    with open(audio_path, "wb") as f:
+                        async for chunk in response.aiter_bytes(chunk_size=8192):
+                            f.write(chunk)
 
-            # Clean up memory before transcription
-            torch.cuda.empty_cache()  # Clean GPU memory (even though we're on CPU)
+            # Force garbage collection before transcription
+            import gc
+            gc.collect()
+            torch.cuda.empty_cache()
             
-            # Transcribe audio to MIDI
+            # Process the audio file
             transcribed_dict = transcriptor.transcribe(audio_path)
             
-            # Create MIDI file
+            # Create MIDI file with minimal memory usage
             midi_obj = MIDIFile(1)
             midi_obj.addTempo(0, 0, 120)
             
-            # Add notes to MIDI file
-            for note in transcribed_dict['est_note_events']:
-                start_time, duration, pitch, velocity = note
-                midi_obj.addNote(0, 0, pitch, start_time, duration, velocity)
+            # Process notes in chunks to save memory
+            chunk_size = 100
+            notes = transcribed_dict['est_note_events']
+            for i in range(0, len(notes), chunk_size):
+                chunk = notes[i:i + chunk_size]
+                for note in chunk:
+                    start_time, duration, pitch, velocity = note
+                    midi_obj.addNote(0, 0, pitch, start_time, duration, velocity)
             
             # Save MIDI file
             with open(midi_path, "wb") as midi_file:
                 midi_obj.writeFile(midi_file)
             
-            # Upload MIDI file to Supabase
+            # Upload MIDI file with streaming
             headers = {
                 "Authorization": f"Bearer {supabase_key}",
                 "Content-Type": "audio/midi"
@@ -90,12 +98,11 @@ async def transcribe_audio(
                     if response.status_code != 200:
                         raise HTTPException(status_code=500, detail="Failed to upload MIDI file")
 
-            # Update transcription status
-            headers = {
-                "Authorization": f"Bearer {supabase_key}",
+            # Update status
+            headers.update({
                 "Content-Type": "application/json",
                 "Prefer": "return=minimal"
-            }
+            })
             
             update_url = f"{supabase_url}/rest/v1/transcriptions?input_file=eq.{audio_file_id}"
             async with httpx.AsyncClient() as client:
@@ -113,7 +120,7 @@ async def transcribe_audio(
             return {"status": "success", "midi_file": f"{audio_file_id}.mid"}
 
     except Exception as e:
-        # Update transcription status to error
+        # Update error status
         headers = {
             "Authorization": f"Bearer {supabase_key}",
             "Content-Type": "application/json",
